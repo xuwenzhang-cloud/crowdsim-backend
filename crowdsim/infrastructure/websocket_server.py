@@ -94,7 +94,7 @@ class OverlayServer:
     async def _send_init(self, request_id) -> None:
         await self._send({**self.simulator.init_frame(), "request_id": request_id})
 
-    async def _prepare(self, request_id, count, *, reset=False):
+    async def _prepare(self, request_id, count, *, reset=False, seed=None):
         if self.simulator.demand_mode == "generated_hotspot":
             await self._send({"type": "preparing", "request_id": request_id,
                               "message": "正在生成本轮需求并初始化 SUMO，请稍候。"})
@@ -102,9 +102,13 @@ class OverlayServer:
         # A worker keeps WebSocket ping/pong responsive during larger generation.
         if reset:
             if self.simulator.demand_mode == "generated_hotspot" and count is None:
-                operation = asyncio.to_thread(self.simulator.reset, use_default_count=True)
+                operation = asyncio.to_thread(
+                    self.simulator.reset, use_default_count=True, **({"seed": seed} if seed is not None else {})
+                )
             else:
-                operation = asyncio.to_thread(self.simulator.reset, count)
+                operation = asyncio.to_thread(
+                    self.simulator.reset, count, **({"seed": seed} if seed is not None else {})
+                )
         else:
             operation = asyncio.to_thread(self.simulator.initialize)
         worker = asyncio.create_task(operation)
@@ -256,7 +260,23 @@ class OverlayServer:
                 if state is None and motion is None:
                     raise CommandError("unknown_agent", f"Unknown person id: {person_id}")
                 await self._send({"type": "agent_state", "request_id": request_id, "snapshot_id": self.simulator.snapshot_id, "time": self.simulator.time_seconds, "id": person_id, "profile": asdict(self.simulator.profile_for(person_id)), "state": asdict(state) if state else None, "motion": asdict(motion) if motion else None})
-            elif action in {"update_flood_source", "set_event", "trigger_event", "event_decision", "set_policy", "apply_policy", "set_group"}:
+            elif action == "evaluate_routes":
+                from crowdsim.decision.routing_registry import run_routing_algorithm
+
+                routes = data.get("routes") or []
+                if self.simulator.route_provider is None:
+                    raise ValueError("routing topology is unavailable until the simulator is initialized")
+                for route in routes:
+                    if not isinstance(route, dict):
+                        raise ValueError("each route must be an object")
+                    self.simulator.route_provider.validate_edges(tuple(map(str, route.get("routeEdges") or route.get("edges") or ())))
+                algorithm = str(data.get("algorithm") or "")
+                if algorithm == "validate_only":
+                    result = {"algorithm": algorithm, "valid": True, "routeCount": len(routes)}
+                else:
+                    result = run_routing_algorithm(algorithm, routes, **dict(data.get("parameters") or {}))
+                await self._send({"type": "routing_result", "request_id": request_id, "result": result})
+            elif action in {"update_flood_source", "set_event", "trigger_event", "event_decision", "set_policy", "apply_policy", "apply_action", "set_group"}:
                 queued = self.simulator.queue_command(action, data, request_id)
                 if self.simulator.state != RuntimeState.RUNNING:
                     self.simulator.process_pending_commands()
@@ -266,8 +286,11 @@ class OverlayServer:
                     await self._send(queued)
             elif action == "reset":
                 self._validate_count(data.get("count"))
+                seed = data.get("seed")
+                if seed is not None and type(seed) is not int:
+                    raise CommandError("invalid_seed", "seed must be an integer")
                 await self._stop_loop()
-                await self._prepare(request_id, data.get("count"), reset=True)
+                await self._prepare(request_id, data.get("count"), reset=True, seed=seed)
                 await self._send_init(request_id)
             else:
                 raise CommandError("unknown_action", f"Unknown action: {action}")

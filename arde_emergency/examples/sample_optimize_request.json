@@ -1,0 +1,52 @@
+{
+  "workflowId": "during-event-assessment-event1",
+  "methodId": "bilevel-autonomy",
+  "evaluation": {
+    "workflowId": "during-event-assessment-event1",
+    "eventId": "event1",
+    "strategy": "志愿者引导分流",
+    "scenario": "节假日高峰 + 暴雨转内涝",
+    "location": "外滩观景平台 - 南京东路步行廊道",
+    "finalScore": 78,
+    "verdict": "方案可用但稳定性不足",
+    "primaryWeakness": "外围区域出现风险转移，引导服从率下降。"
+  },
+  "workflow": {
+    "id": "during-event-assessment-event1",
+    "stage": "evaluation-completed",
+    "scenario": {
+      "eventType": "crowd_surge",
+      "location": "上海外滩",
+      "text": "观景平台密度升高，地铁口积水，廊道出现转移拥堵",
+      "triggeredEvent": {
+        "eventId": "event1",
+        "eventType": "crowd_surge",
+        "scenarioTitle": "路口人群快速聚集",
+        "floodDepth": 0.25
+      }
+    },
+    "experiment": {
+      "averageMetrics": {
+        "density": 4.3,
+        "speed": 0.72,
+        "pressure": 72,
+        "riskIndex": 72,
+        "congestionMinutes": 18
+      }
+    }
+  },
+  "experimentPayload": {
+    "baselineMetrics": {
+      "density": 4.3,
+      "speed": 0.72,
+      "pressure": 72,
+      "riskIndex": 72,
+      "congestionMinutes": 18
+    }
+  },
+  "options": {
+    "emergencyProfile": "combined",
+    "macroStepMinutes": 2,
+    "useSimulationRollout": false
+  }
+}

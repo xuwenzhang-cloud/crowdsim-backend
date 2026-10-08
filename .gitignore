@@ -9,7 +9,11 @@ env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+*.egg-info/
+build/
 outputs/
 video_outputs/
 runs/
 pedestrian_decision_skill/config.json
+arde_emergency/examples/demo_effectiveness_result.json
+arde_emergency/examples/demo_effectiveness.md

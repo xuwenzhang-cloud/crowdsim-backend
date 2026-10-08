@@ -22,6 +22,7 @@ class InformationMessage:
     radius: Optional[float] = None
     event_id: Optional[str] = None
     recipient_ids: tuple[str, ...] = ()
+    command_type: str = "inform"
 
 
 @dataclass(frozen=True)
@@ -60,7 +61,12 @@ class InformationModel:
                 state = states[person_id]
                 state.received_messages.append(message.message_id)
                 if trusted and message.event_id:
-                    state.known_events[message.event_id] = {"source": message.source_type, "content": message.content, "expires_at": message.expires_at}
+                    state.known_events[message.event_id] = {
+                        "source": message.source_type,
+                        "content": message.content,
+                        "command": message.command_type,
+                        "expires_at": message.expires_at,
+                    }
                 record = DeliveryRecord(message.message_id, person_id, now, trusted)
                 self.delivered.add(key)
                 self.records.append(record)

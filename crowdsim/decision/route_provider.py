@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, replace
+import math
 from typing import Iterable
 
 from crowdsim.domain.crowdsim_models import MotionSnapshot
@@ -49,6 +50,7 @@ class RouteProvider:
         self.edge_lengths = {edge_id: walking_length(network, edge_id) for edge_id in self.walkable_edges}
         self.reachability = PedestrianReachability(network)
         self.position_router = PositionAwarePedestrianRouter(network)
+        self.dynamic_risk_weights: dict[str, float] = {}
         self._routes = OrderedDict()
         self._failures = OrderedDict()
         self._topology_failures = OrderedDict()
@@ -79,13 +81,34 @@ class RouteProvider:
             route = self.position_router.route(
                 EdgePosition(from_edge, depart_pos),
                 EdgePosition(to_edge, arrival_pos),
+                edge_costs=self._effective_edge_costs(None),
                 default_speed_mps=1.35,
+                cost_token=self._risk_cost_token(),
             )
         except PositionRouteUnavailable as exc:
             self.counters["sumo_unreachable"] += 1
             raise RouteUnavailable(str(exc)) from exc
         edges = self.validate_edges(route.edges, current_edge=from_edge)
         return edges, route.cost
+
+    def set_edge_risk_weight(self, edge_id: str, weight: float | None) -> None:
+        if edge_id not in self.walkable_edges:
+            raise ValueError(f"unknown or non-pedestrian SUMO edge: {edge_id}")
+        if weight is None or math.isclose(float(weight), 1.0):
+            self.dynamic_risk_weights.pop(edge_id, None)
+        elif not math.isfinite(float(weight)) or float(weight) <= 0:
+            raise ValueError("edge risk weight must be positive and finite")
+        else:
+            self.dynamic_risk_weights[edge_id] = float(weight)
+
+    def _risk_cost_token(self):
+        return tuple(sorted((edge_id, round(weight, 6)) for edge_id, weight in self.dynamic_risk_weights.items()))
+
+    def _effective_edge_costs(self, supplied: dict[str, float] | None) -> dict[str, float] | None:
+        result = dict(supplied or {})
+        for edge_id, weight in self.dynamic_risk_weights.items():
+            result.setdefault(edge_id, self.edge_lengths[edge_id] / 1.35 * weight)
+        return result or None
 
     def validate_edges(self, edges: Iterable[str], *, current_edge: str | None = None) -> tuple[str, ...]:
         route = tuple(edges)
@@ -126,6 +149,8 @@ class RouteProvider:
             raise ValueError("route replacement is deferred while the person is on an internal junction edge")
         position = resolve_position(self.network, target_edge, arrival_position)
         departure = resolve_position(self.network, motion.edge_id, motion.lane_position)
+        edge_costs = self._effective_edge_costs(edge_costs)
+        cost_token = (cost_token, self._risk_cost_token())
         try:
             route = self.position_router.route(
                 EdgePosition(motion.edge_id, departure),

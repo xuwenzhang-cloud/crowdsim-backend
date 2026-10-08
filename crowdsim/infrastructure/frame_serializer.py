@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from crowdsim.domain.crowdsim_models import AgentState, MotionSnapshot
+from crowdsim.domain.runtime_capabilities import control_capabilities
 
 
 class FrameSerializer:
     def build_init(self, runtime: Any) -> Dict[str, Any]:
-        return {"type": "init", "crowd_visual_state": runtime.visual_policy.metadata(), "run_id": runtime.run_id, "runtime_state": runtime.state.value, "center": list(runtime.center), "speedFactor": runtime.sim_speed_factor, "step_length": runtime.step_length, "real_step_interval": runtime.real_step_interval, "scenario": runtime.scenario_diagnostics(), "requirement": runtime.requirement_diagnostics(), "flood_points": runtime.flood_points, "flooded_roads": runtime.flooded_roads, "hotspots": runtime.hotspot_catalog.serialize() if runtime.hotspot_catalog else [], "demand": runtime.demand_diagnostics(), "metrics": self._metrics(runtime)}
+        return {"type": "init", "crowd_visual_state": runtime.visual_policy.metadata(), "run_id": runtime.run_id, "runtime_state": runtime.state.value, "center": list(runtime.center), "speedFactor": runtime.sim_speed_factor, "step_length": runtime.step_length, "real_step_interval": runtime.real_step_interval, "scenario": runtime.scenario_diagnostics(), "requirement": runtime.requirement_diagnostics(), "capabilities": control_capabilities(), "flood_points": runtime.flood_points, "flooded_roads": runtime.flooded_roads, "hotspots": runtime.hotspot_catalog.serialize() if runtime.hotspot_catalog else [], "demand": runtime.demand_diagnostics(), "metrics": self._metrics(runtime)}
 
     def build_frame(self, runtime: Any) -> Dict[str, Any]:
         current = runtime.current
@@ -17,7 +18,7 @@ class FrameSerializer:
             raise RuntimeError("runtime has no SUMO snapshot")
         pedestrians = [self._pedestrian(runtime, motion) for motion in current.persons.values()]
         vehicles = [{"id": item["id"], "lng": item["lon"], "lat": item["lat"], "speed": round(item["speed"], 3), "color": self._motion_color(item["speed"], 0.0), "flood_impact": 0.0, "congestion": 0.0, "edge": item["edge_id"], "display_edge": item["edge_id"], "synthetic": False, "data_source": "sumo_simulation"} for item in current.vehicles.values()]
-        return {"type": "update", "run_id": runtime.run_id, "runtime_state": runtime.state.value, "snapshot_id": runtime.snapshot_id, "step": current.time_seconds, "step_seconds": current.time_seconds, "step_index": runtime.snapshot_index, "step_length": runtime.step_length, "speed_factor": runtime.sim_speed_factor, "real_step_interval": runtime.real_step_interval, "scenario": runtime.scenario_diagnostics(), "vehicles": vehicles, "pedestrians": pedestrians, "flood_points": runtime.flood_points, "flooded_roads": runtime.flooded_roads, "events": runtime.serialized_events, "metrics": self._metrics(runtime, pedestrians, vehicles), "event_state": runtime.event_state}
+        return {"type": "update", "run_id": runtime.run_id, "runtime_state": runtime.state.value, "snapshot_id": runtime.snapshot_id, "step": current.time_seconds, "step_seconds": current.time_seconds, "step_index": runtime.snapshot_index, "step_length": runtime.step_length, "speed_factor": runtime.sim_speed_factor, "real_step_interval": runtime.real_step_interval, "scenario": runtime.scenario_diagnostics(), "vehicles": vehicles, "pedestrians": pedestrians, "flood_points": runtime.flood_points, "flooded_roads": runtime.flooded_roads, "events": runtime.serialized_events, "metrics": self._metrics(runtime, pedestrians, vehicles), "event_state": runtime.event_state, "active_interventions": runtime.interventions.active_controls()}
 
     def _pedestrian(self, runtime: Any, motion: MotionSnapshot) -> Dict[str, Any]:
         state = runtime.population.state_for(motion.person_id) or AgentState(motion.person_id)
@@ -38,4 +39,39 @@ class FrameSerializer:
         combined = pedestrians + vehicles
         average = lambda items: sum(item["speed"] for item in items) / max(1, len(items))
         measured = runtime.latest_metrics
-        return {"visual_state_counts": measured.get("visual_state_counts", {}), "visual_density_unknown_count": measured.get("visual_density_unknown_count", 0), "avg_speed": round(average(combined), 3), "pedestrian_avg_speed": round(measured.get("pedestrian_avg_speed_mps", average(pedestrians)), 3), "vehicle_avg_speed": round(measured.get("vehicle_avg_speed_mps", average(vehicles)), 3), "pedestrian_count": len(pedestrians), "vehicle_count": len(vehicles), "affected": sum(item.get("flood_impact", 0) > 0 for item in pedestrians), "congestion": round(sum(item.get("congestion", 0) for item in pedestrians) / max(1, len(pedestrians)), 3), "water_count": len(runtime.flood_points), "policy": runtime.active_policy, "pedestrian_engine": runtime.adapter.diagnostics, "population": runtime.population.diagnostics(), "decision_engine": runtime.decision_diagnostics, "routing": runtime.routing_diagnostics, "density_levels": runtime.density_level_counts(), "queue": measured.get("queue", {}), "edge_metrics": measured.get("edges", {}), "hotspot_metrics": measured.get("hotspots", {}), "units": measured.get("units", {})}
+        population = runtime.population.diagnostics()
+        hotspots = measured.get("hotspots", {})
+        entry_metrics = measured.get("entries", {})
+        if not entry_metrics and isinstance(hotspots, dict):
+            entry_metrics = {
+                str(values["entryId"]): {"regionId": str(region_id), **dict(values)}
+                for region_id, values in hotspots.items()
+                if isinstance(values, dict) and values.get("entryId")
+            }
+        return {
+            "visual_state_counts": measured.get("visual_state_counts", {}),
+            "visual_density_unknown_count": measured.get("visual_density_unknown_count", 0),
+            "avg_speed": round(average(combined), 3),
+            "pedestrian_avg_speed": round(measured.get("pedestrian_avg_speed_mps", average(pedestrians)), 3),
+            "pedestrian_risk_speed": round(measured.get("pedestrian_risk_speed_mps", measured.get("pedestrian_avg_speed_mps", average(pedestrians))), 3),
+            "vehicle_avg_speed": round(measured.get("vehicle_avg_speed_mps", average(vehicles)), 3),
+            "pedestrian_count": len(pedestrians),
+            "vehicle_count": len(vehicles),
+            "affected": sum(item.get("flood_impact", 0) > 0 for item in pedestrians),
+            "congestion": round(sum(item.get("congestion", 0) for item in pedestrians) / max(1, len(pedestrians)), 3),
+            "water_count": len(runtime.flood_points),
+            "policy": runtime.active_policy,
+            "pedestrian_engine": runtime.adapter.diagnostics,
+            "population": population,
+            "decision_engine": runtime.decision_diagnostics,
+            "routing": runtime.routing_diagnostics,
+            "route_metrics": runtime.routing_diagnostics,
+            "entry_metrics": entry_metrics,
+            "exit_metrics": measured.get("exits", {"arrived": population.get("arrived", population.get("arrived_count", 0))}),
+            "density_levels": runtime.density_level_counts(),
+            "queue": measured.get("queue", {}),
+            "control_queue": measured.get("control_queue", {}),
+            "edge_metrics": measured.get("edges", {}),
+            "hotspot_metrics": hotspots,
+            "units": measured.get("units", {}),
+        }

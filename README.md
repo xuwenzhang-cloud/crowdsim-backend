@@ -12,6 +12,8 @@ crowdsim/
 ├─ decision/        规则/LLM接口、调度、路线候选、计划执行
 └─ infrastructure/  SUMO/路网适配、WebSocket、帧、指标、实验记录
 
+arde_emergency/     ARDE 状态、双层决策、奖励、动作映射与兼容接口
+
 config/             参数、属性注册表和POI
 scenarios/          正式外滩SUMO场景
 scripts/            运行、回放和验收工具
@@ -29,8 +31,13 @@ runs/               不纳入版本控制的实验产物
 
 ```powershell
 D:\Anaconda\python.exe -m pip install -r requirements.txt
+D:\Anaconda\python.exe -m pip install -e .
 D:\sumo-1.24.0\bin\sumo.exe --version
 ```
+
+`pip install -e .` 将仓库内的 `arde_emergency` 安装为可导入包。MACE 可以直接
+`from arde_emergency import ArdeController`；若 MACE 与本仓库相邻，也会通过
+适配器自动发现。分开部署时，将 `ARDE_BACKEND_PATH` 设置为本仓库根目录。
 
 `traci`、`sumolib` 和 SUMO 二进制必须使用相同版本。仅安装 Python 包不包含完整 SUMO 仿真程序。
 

@@ -15,9 +15,11 @@ from crowdsim.decision.decision_scheduler import DecisionScheduler
 from crowdsim.decision.hotspot_route_choice import HotspotRouteChoice
 from crowdsim.decision.plan_executor import PlanExecutor
 from crowdsim.decision.route_provider import RouteProvider
+from crowdsim.control.inflow_meter import InflowMeter
 from crowdsim.domain.crowdsim_models import AgentProfile, GroupRecord
 from crowdsim.domain.crowd_visual_state import CrowdVisualPolicy, STATE_COLORS
 from crowdsim.domain.group_manager import GroupManager
+from crowdsim.domain.population_profiles import PopulationProfileSampler
 from crowdsim.domain.requirement_spec import requirement_runtime_summary
 from crowdsim.environment.activity_planner import ActivityPlanner
 from crowdsim.environment.crowd_environment import CrowdEnvironment
@@ -71,6 +73,7 @@ class SimulationRuntime:
         timeline_end_seconds: float | None = None,
         hotspot_demand_spec: HotspotDemandSpec | None = None,
         requirement_record: dict | None = None,
+        random_seed: int | None = None,
     ) -> None:
         if demand_mode not in {"configurable", "fixed", "generated_hotspot"}:
             raise ValueError("unknown demand_mode")
@@ -94,7 +97,11 @@ class SimulationRuntime:
             sumo_binary=sumo_binary,
             extra_args=self._extra_sumo_args,
         )
-        self.population = PopulationManager(self._pedestrian_route_files)
+        if random_seed is not None and hotspot_demand_spec is not None:
+            hotspot_demand_spec = replace(hotspot_demand_spec, seed=int(random_seed))
+        profile_sampler = PopulationProfileSampler(seed=int(random_seed)) if random_seed is not None else None
+        self.population = PopulationManager(self._pedestrian_route_files, profile_sampler=profile_sampler)
+        self.random_seed = int(self.population.profile_sampler.seed)
         self.state = RuntimeState.CREATED
         self.current: SumoStepResult | None = None
         self.snapshot_index = 0
@@ -127,6 +134,10 @@ class SimulationRuntime:
         self.information = InformationModel()
         self.hazards = HazardModel()
         self.interventions = InterventionExecutor(self.information)
+        self._control_speed_limits: dict[str, dict[str, float]] = {}
+        self._control_risk_weights: dict[str, tuple[str, float]] = {}
+        self._inflow_meters: dict[str, InflowMeter] = {}
+        self._inflow_holds: dict[str, set[str]] = {}
         self.event_manager: EventManager | None = None
         self.groups = GroupManager()
         self.route_provider: RouteProvider | None = None
@@ -304,6 +315,7 @@ class SimulationRuntime:
     @timed('boundary_total')
     def _prepare_boundary(self) -> list[str]:
         self.process_pending_commands()
+        self._expire_control_actions()
         self.hazards.update(self.time_seconds)
         if self.event_manager is not None:
             self.event_manager.step(self.time_seconds)
@@ -317,6 +329,7 @@ class SimulationRuntime:
             if self.recorder is not None:
                 self.recorder.record_messages(deliveries)
         if self.plan_executor is not None:
+            self._refresh_dynamic_control_targets()
             self._maintain_hotspot_activity(self.time_seconds)
             self.plan_executor.maintain(self.time_seconds)
             for person_id, state in self.population.states.items():
@@ -374,6 +387,8 @@ class SimulationRuntime:
             return self.set_event(data)
         if action in {"event_decision", "set_policy", "apply_policy"}:
             return self.apply_policy(data)
+        if action == "apply_action":
+            return self.apply_control_action(data)
         if action == "set_group":
             record = GroupRecord(
                 group_id=str(data.get("group_id") or ""),
@@ -420,6 +435,13 @@ class SimulationRuntime:
         if self.metrics_collector is not None:
             with self.performance.measure('metrics'):
                 self.latest_metrics = self.metrics_collector.measure(result, self.population.states, self.population.diagnostics())
+                planned_holds = set(self.plan_executor.flow_hold_reasons) | set(self.plan_executor.activity_hold_until) if self.plan_executor is not None else set()
+                moving = [motion.speed for person_id, motion in result.persons.items() if person_id not in planned_holds]
+                self.latest_metrics["pedestrian_risk_speed_mps"] = sum(moving) / max(1, len(moving))
+                self.latest_metrics["control_queue"] = {
+                    "inflow_held": len(self.plan_executor.flow_hold_reasons) if self.plan_executor is not None else 0,
+                    "planned_activity_held": len(self.plan_executor.activity_hold_until) if self.plan_executor is not None else 0,
+                }
         self._refresh_visual_states()
         if self.recorder is not None:
             with self.performance.measure('record_step'):
@@ -622,13 +644,19 @@ class SimulationRuntime:
         if self.plan_executor is None:
             return
         for person_id, deadline in tuple(self.plan_executor.activity_hold_until.items()):
-            if now + 1e-9 < deadline:
+            state = self.population.states.get(person_id)
+            guided_exit = bool(state and any(
+                str(event_id) == str(state.current_goal)
+                and str(detail.get("command") or "inform") in {"disperse", "evacuate"}
+                for event_id, detail in state.known_events.items()
+            ))
+            if not guided_exit and now + 1e-9 < deadline:
                 continue
             self.plan_executor.release_activity_hold(person_id)
-            state = self.population.states.get(person_id)
             if state is not None:
                 state.activity_state = "hotspot_departing"
                 state.hotspot_dwell_until = None
+                state.next_decision_time = min(state.next_decision_time, now)
 
     def _abort_resources(self) -> None:
         self._cleanup_resources()
@@ -719,7 +747,7 @@ class SimulationRuntime:
         self.demand_count = count
         return True
 
-    def reset(self, count=None, *, use_default_count=False):
+    def reset(self, count=None, *, use_default_count=False, seed=None):
         count = self.demand_count if count is None and not use_default_count else count
         config_path = self.config_path
         route_files = self._pedestrian_route_files
@@ -732,6 +760,7 @@ class SimulationRuntime:
         timeline_end_seconds = self.timeline_end_seconds
         hotspot_demand_spec = self.hotspot_demand_spec
         requirement_record = self.requirement_record
+        random_seed = self.random_seed if seed is None else int(seed)
         self.close()
         self.__init__(
             config_path,
@@ -745,6 +774,7 @@ class SimulationRuntime:
             timeline_end_seconds=timeline_end_seconds,
             hotspot_demand_spec=hotspot_demand_spec,
             requirement_record=requirement_record,
+            random_seed=random_seed,
         )
         if count is not None:
             self.configure_demand(count)
@@ -879,6 +909,238 @@ class SimulationRuntime:
         self.active_policy = name
         self.event_state = {"crowd_gathering": {"active": bool(name), "decision": name, "step": self.snapshot_index}}
         return record
+
+    def apply_control_action(self, data: dict) -> dict:
+        from crowdsim.domain.action_contract import validate_control_action
+
+        action = validate_control_action(data.get("controlAction") or data.get("control_action") or data)
+        action_type = action["actionType"]
+        target = action.get("target") or {}
+        parameters = action.get("parameters") or {}
+        detail: dict = {"actionId": action["actionId"], "affectedAgents": 0}
+        if action_type == "set_inflow_rate":
+            if self.current is None or self.plan_executor is None:
+                raise RuntimeError("runtime is not initialized")
+            edge_id = str(target.get("entryId") or "")
+            if self.network is None or edge_id not in self.network.edges:
+                raise ValueError(f"unknown target edge: {edge_id}")
+            rate = float(parameters["rate"])
+            edge = self.network.edges[edge_id]
+            width = sum(lane.getWidth() for lane in edge.getLanes() if lane.allows("pedestrian"))
+            nominal_capacity = max(0.5, width * 1.3)
+            self._inflow_meters[action["actionId"]] = InflowMeter(
+                action_id=action["actionId"], entry_id=edge_id, rate=rate,
+                nominal_capacity_per_second=nominal_capacity, last_time=self.time_seconds,
+            )
+            self._inflow_holds[action["actionId"]] = set()
+            self._refresh_inflow_controls()
+            held = self._inflow_holds.get(action["actionId"], set())
+            detail.update({
+                "targetEdge": edge_id, "effectiveRate": rate,
+                "nominalCapacityPerSecond": nominal_capacity,
+                "affectedAgents": len(held), "controlMode": "token_bucket_entry_meter",
+            })
+        elif action_type == "set_edge_capacity":
+            if self.current is None or self.plan_executor is None:
+                raise RuntimeError("runtime is not initialized")
+            edge_id = str(target.get("edgeId") or "")
+            if self.network is None or edge_id not in self.network.edges:
+                raise ValueError(f"unknown target edge: {edge_id}")
+            factor = float(parameters.get("multiplier"))
+            limits = {}
+            for person_id, motion in self.current.persons.items():
+                if motion.edge_id == edge_id:
+                    profile = self.population.profile_for(person_id)
+                    limits[person_id] = max(0.0, profile.free_walking_speed * profile.mobility * factor)
+            self._control_speed_limits[action["actionId"]] = limits
+            self._refresh_control_speed_limits()
+            detail.update({"targetEdge": edge_id, "effectiveFactor": factor, "affectedAgents": len(limits)})
+        elif action_type == "set_edge_risk_weight":
+            if self.route_provider is None:
+                raise RuntimeError("routing is not initialized")
+            edge_id = str(target["edgeId"])
+            if self.network is None or edge_id not in self.network.edges:
+                raise ValueError(f"unknown target edge: {edge_id}")
+            weight = float(parameters["weight"])
+            self._control_risk_weights[action["actionId"]] = (edge_id, weight)
+            self._refresh_control_risk_weights()
+            detail.update({"targetEdge": edge_id, "effectiveWeight": weight})
+        elif action_type == "reroute_group":
+            detail.update(self._reroute_people(
+                group_id=str(target["groupId"]),
+                route_edges=tuple(map(str, parameters["routeEdges"])),
+            ))
+        elif action_type == "set_route_distribution":
+            detail.update(self._apply_route_distribution(action))
+        record = self.interventions.apply_command(action_type, action, self.time_seconds)
+        record["detail"].update(detail)
+        record["decisionId"] = data.get("decisionId")
+        self.active_policy = action_type
+        return record
+
+    def _reroute_people(self, *, group_id: str, route_edges: tuple[str, ...]) -> dict:
+        if self.current is None or self.plan_executor is None or self.route_provider is None:
+            raise RuntimeError("runtime is not initialized")
+        self.route_provider.validate_edges(route_edges)
+        matched = [person_id for person_id, state in self.population.states.items() if state.group_id == group_id]
+        result = self._reroute_person_ids(matched, route_edges)
+        return {"groupId": group_id, "matchedAgents": len(matched), **result}
+
+    def _reroute_person_ids(self, matched, route_edges: tuple[str, ...]) -> dict:
+        applied, failed = 0, 0
+        from crowdsim.domain.crowdsim_models import BehaviorPlan
+        for person_id in matched:
+            motion = self.current.persons.get(person_id)
+            if motion is None:
+                continue
+            route = route_edges
+            if route[0] != motion.edge_id:
+                failed += 1
+                continue
+            try:
+                plan = BehaviorPlan(
+                    person_id=person_id,
+                    snapshot_id=self.snapshot_id,
+                    proposed_action="reroute",
+                    route_edges=route,
+                    arrival_position=None,
+                    reason="MACE group control",
+                    source="external_control",
+                    decided_at=self.time_seconds,
+                    expires_at=self.time_seconds + 30,
+                    preserve_future_stages=False,
+                )
+                result = self.plan_executor.apply(plan, motion, self.snapshot_id, self.time_seconds)
+                applied += result.status == "applied"
+                failed += result.status != "applied"
+            except (RuntimeError, ValueError):
+                failed += 1
+        return {"affectedAgents": applied, "failedAgents": failed}
+
+    def _apply_route_distribution(self, action: dict) -> dict:
+        if self.current is None or self.route_provider is None:
+            raise RuntimeError("runtime is not initialized")
+        origin = str(action["target"]["originId"])
+        choices = []
+        for item in action["parameters"]["distributions"]:
+            route = item.get("routeEdges")
+            if not isinstance(route, list) or not route:
+                raise ValueError("each executable route distribution requires routeEdges")
+            route_edges = tuple(map(str, route))
+            self.route_provider.validate_edges(route_edges)
+            if route_edges[0] != origin:
+                raise ValueError(f"route {item['routeId']} must start at origin edge {origin}")
+            choices.append((float(item["ratio"]), str(item["routeId"]), route_edges))
+        candidates = sorted(person_id for person_id, motion in self.current.persons.items() if motion.edge_id == origin)
+        applied = failed = 0
+        cursor = 0.0
+        thresholds = []
+        for ratio, route_id, route in choices:
+            cursor += ratio
+            thresholds.append((cursor, route_id, route))
+        from hashlib import sha256
+        for person_id in candidates:
+            unit = int.from_bytes(sha256(f"{action['actionId']}:{person_id}".encode()).digest()[:8], "big") / 2**64
+            _, _, route = next(item for item in thresholds if unit <= item[0] + 1e-12)
+            result = self._reroute_person_ids([person_id], route)
+            applied += result["affectedAgents"]
+            failed += result["failedAgents"]
+        return {"originId": origin, "matchedAgents": len(candidates), "affectedAgents": applied, "failedAgents": failed}
+
+    def _expire_control_actions(self) -> None:
+        expired = self.interventions.expire(self.time_seconds)
+        changed_speed = changed_risk = False
+        for record in expired:
+            action_id = record["actionId"]
+            changed_speed = self._control_speed_limits.pop(action_id, None) is not None or changed_speed
+            changed_risk = self._control_risk_weights.pop(action_id, None) is not None or changed_risk
+            if action_id in self._inflow_meters:
+                self._inflow_meters.pop(action_id, None)
+                for person_id in self._inflow_holds.pop(action_id, set()):
+                    if self.plan_executor is not None:
+                        self.plan_executor.set_inflow_hold(person_id, action_id, False)
+        if changed_speed:
+            self._refresh_control_speed_limits()
+        if changed_risk:
+            self._refresh_control_risk_weights()
+
+    def _refresh_control_speed_limits(self) -> None:
+        if self.plan_executor is None:
+            return
+        controlled = set().union(*(set(value) for value in self._control_speed_limits.values())) if self._control_speed_limits else set()
+        existing = set(self.plan_executor.strategy_limits)
+        for person_id in existing | controlled:
+            limits = [mapping[person_id] for mapping in self._control_speed_limits.values() if person_id in mapping]
+            self.plan_executor.set_strategy_limit(person_id, min(limits) if limits else None)
+
+    def _refresh_dynamic_control_targets(self) -> None:
+        if self.current is None:
+            return
+        self._refresh_inflow_controls()
+        active = {item["actionId"]: item for item in self.interventions.active_controls()}
+        changed = False
+        for action_id, record in active.items():
+            action_type = record.get("actionType")
+            if action_type != "set_edge_capacity":
+                continue
+            target, parameters = record.get("target") or {}, record.get("parameters") or {}
+            edge_id = str(target.get("edgeId") or "")
+            factor = float(parameters.get("multiplier"))
+            limits = {}
+            for person_id, motion in self.current.persons.items():
+                if motion.edge_id == edge_id:
+                    profile = self.population.profile_for(person_id)
+                    limits[person_id] = max(0.0, profile.free_walking_speed * profile.mobility * factor)
+            if self._control_speed_limits.get(action_id) != limits:
+                self._control_speed_limits[action_id] = limits
+                changed = True
+        if changed:
+            self._refresh_control_speed_limits()
+
+    def _refresh_inflow_controls(self) -> None:
+        if self.current is None or self.plan_executor is None:
+            return
+        for action_id, meter in self._inflow_meters.items():
+            candidates = self._entry_meter_candidates(meter.entry_id)
+            held, _ = meter.regulate(candidates, self.time_seconds)
+            previous = self._inflow_holds.get(action_id, set())
+            for person_id in previous - held:
+                self.plan_executor.set_inflow_hold(person_id, action_id, False)
+            for person_id in held - previous:
+                self.plan_executor.set_inflow_hold(person_id, action_id, True)
+            self._inflow_holds[action_id] = held
+            lifecycle_record = self.interventions.lifecycle.active.get(action_id)
+            if lifecycle_record is not None:
+                lifecycle_record.setdefault("detail", {}).update({
+                    "currentlyHeldAgents": len(held),
+                    "admittedAgents": len(meter.admitted),
+                    "controlMode": "token_bucket_entry_meter",
+                })
+
+    def _entry_meter_candidates(self, entry_id: str) -> set[str]:
+        if self.current is None:
+            return set()
+        candidates = set()
+        for person_id, motion in self.current.persons.items():
+            if motion.stage_type != tc.STAGE_WALKING or motion.edge_id.startswith(":"):
+                continue
+            try:
+                route = tuple(map(str, self.adapter.current_person_stage(person_id).edges))
+            except Exception:
+                continue
+            positions = [index for index, edge_id in enumerate(route) if edge_id == motion.edge_id]
+            if any(index + 1 < len(route) and route[index + 1] == entry_id for index in positions):
+                candidates.add(person_id)
+        return candidates
+
+    def _refresh_control_risk_weights(self) -> None:
+        if self.route_provider is None:
+            return
+        edges = set(self.route_provider.dynamic_risk_weights)
+        edges.update(edge_id for edge_id, _ in self._control_risk_weights.values())
+        for edge_id in edges:
+            weights = [weight for candidate, weight in self._control_risk_weights.values() if candidate == edge_id]
+            self.route_provider.set_edge_risk_weight(edge_id, max(weights) if weights else None)
 
     def _config_root(self):
         return ET.parse(self.config_path).getroot()

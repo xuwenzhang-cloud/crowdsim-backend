@@ -35,6 +35,14 @@ class AgentDecisionEngine:
             return BehaviorPlan(**common, proposed_action="change_goal" if rendezvous.target_kind == "activity" else "reroute", target_id=rendezvous.target_id, route_edges=rendezvous.edges, arrival_position=rendezvous.arrival_position, activity_duration=rendezvous.activity_duration, next_route_edges=rendezvous.next_route_edges, next_arrival_position=rendezvous.next_arrival_position, next_target_id=rendezvous.next_target_id, reason="rejoin companions at known rendezvous")
         if not state.poi_plan_active and goal_candidate is not None and goal_candidate.target_kind == "activity":
             return BehaviorPlan(**common, proposed_action="change_goal", target_id=goal_candidate.target_id, route_edges=goal_candidate.edges, arrival_position=goal_candidate.arrival_position, activity_duration=goal_candidate.activity_duration, next_route_edges=goal_candidate.next_route_edges, next_arrival_position=goal_candidate.next_arrival_position, next_target_id=goal_candidate.next_target_id, reason="visit-purpose activity plan")
+        guidance_commands = {
+            str(detail.get("command") or "inform")
+            for event_id, detail in state.known_events.items()
+            if state.current_goal is None or str(event_id) == str(state.current_goal)
+        }
+        if guidance_commands & {"reroute", "disperse", "evacuate"} and candidates:
+            candidate = min(candidates, key=lambda item: item.estimated_cost_seconds)
+            return BehaviorPlan(**common, proposed_action="reroute", target_id=candidate.target_id, route_edges=candidate.edges, arrival_position=candidate.arrival_position, reason="trusted official guidance requests rerouting")
         if state.perceived_risk >= max(0.35, profile.risk_tolerance) and candidates:
             candidate = min(candidates, key=lambda item: item.estimated_cost_seconds * (1.2 - 0.2 * profile.familiarity))
             return BehaviorPlan(**common, proposed_action="reroute", target_id=candidate.target_id, route_edges=candidate.edges, arrival_position=candidate.arrival_position, reason="known risk exceeds tolerance")
@@ -73,6 +81,14 @@ class AgentDecisionEngine:
             return reroute(best, "current hotspot entrance is no longer reachable")
         if best.entry_edge == current.entry_edge:
             return BehaviorPlan(**common, proposed_action="continue", reason="current hotspot entrance remains fastest")
+
+        guided = any(
+            str(event_id) == str(state.current_goal)
+            and str(detail.get("command") or "inform") in {"reroute", "disperse", "evacuate"}
+            for event_id, detail in state.known_events.items()
+        )
+        if guided:
+            return reroute(best, "trusted official guidance selects the safest available entrance")
 
         savings = current.estimated_cost_seconds - best.estimated_cost_seconds
         diversion = (

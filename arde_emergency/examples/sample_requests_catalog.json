@@ -1,0 +1,34 @@
+[
+  {
+    "id": "combined",
+    "label": "外滩复合：聚集 + 内涝",
+    "description": "外滩观景平台密度升高，地铁口积水，廊道转移拥堵",
+    "file": "sample_optimize_request.json",
+    "profile": "combined",
+    "mapScene": "bund"
+  },
+  {
+    "id": "crowd",
+    "label": "外滩人群历史推演",
+    "description": "节假日外滩观景平台密度超阈、事件已触发；评估短板为启动偏晚，交 ARDE 做限流+单向+分流",
+    "file": "sample_optimize_request_crowd.json",
+    "profile": "crowd_crush",
+    "mapScene": "bund"
+  },
+  {
+    "id": "flood",
+    "label": "郑州「7·20」内涝",
+    "description": "京广北隧道与地铁5号线口部积水，先封、再排、再导",
+    "file": "sample_optimize_request_flood.json",
+    "profile": "urban_flood_720",
+    "mapScene": "zhengzhou720"
+  },
+  {
+    "id": "recovery",
+    "label": "外滩恢复期防回流",
+    "description": "风险已降，防止解除限流后二次聚集",
+    "file": "sample_optimize_request_recovery.json",
+    "profile": "combined",
+    "mapScene": "bund"
+  }
+]

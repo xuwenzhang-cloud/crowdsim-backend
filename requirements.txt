@@ -2,3 +2,4 @@ websockets>=10.0
 httpx>=0.27,<1.0
 traci==1.24.0
 sumolib==1.24.0
+pyproj>=3.6,<4.0

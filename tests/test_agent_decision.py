@@ -126,6 +126,30 @@ class AgentDecisionTests(unittest.TestCase):
         self.assertEqual("continue", plan.proposed_action)
         self.assertIn("cooldown", plan.reason)
 
+    def test_trusted_guidance_overrides_queue_preference(self):
+        engine = AgentDecisionEngine()
+        profile = AgentProfile("p", crowding_tolerance=1, patience=1, following_tendency=1)
+        state = AgentState(
+            "p", current_goal="monument", hotspot_entry_edge="north",
+            hotspot_last_route_change_time=-100,
+            known_events={"monument": {"command": "disperse", "expires_at": 100}},
+        )
+        _, _, observation = context()
+        north = RouteCandidate("monument", "ring", 5, ("e", "north", "ring"), 100,
+                              target_kind="hotspot_route", entry_edge="north",
+                              base_cost_seconds=35, congestion_delay_seconds=65,
+                              minimum_savings_seconds=200, switch_cooldown_seconds=15)
+        south = RouteCandidate("monument", "ring", 5, ("e", "south", "ring"), 40,
+                              target_kind="hotspot_route", entry_edge="south",
+                              base_cost_seconds=40, minimum_savings_seconds=200,
+                              switch_cooldown_seconds=15)
+
+        plan = engine.rule_plan(profile, state, observation, (north, south))
+
+        self.assertEqual("reroute", plan.proposed_action)
+        self.assertEqual("south", plan.selected_entry_edge)
+        self.assertIn("guidance", plan.reason)
+
 
 if __name__ == "__main__":
     unittest.main()

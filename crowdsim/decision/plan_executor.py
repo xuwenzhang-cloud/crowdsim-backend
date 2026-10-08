@@ -30,6 +30,7 @@ class PlanExecutor:
         self.hazard_limits: Dict[str, float] = {}
         self.wait_until: Dict[str, float] = {}
         self.activity_hold_until: Dict[str, float] = {}
+        self.flow_hold_reasons: Dict[str, set[str]] = {}
         self.base_limits: Dict[str, float] = {}
         self.results: Dict[str, PlanExecutionResult] = {}
         self.route_retry_after: Dict[str, float] = {}
@@ -52,6 +53,7 @@ class PlanExecutor:
     def diagnostics(self) -> dict:
         return {**dict(self.counters), "retry_tracked_people": len(self.route_retry_after),
                 "active_activity_holds": len(self.activity_hold_until),
+                "active_inflow_holds": len(self.flow_hold_reasons),
                 "last_route_error": self.last_route_error}
 
     def retain_active(self, person_ids) -> None:
@@ -61,9 +63,20 @@ class PlanExecutor:
                         self.results, self.route_retry_after, self.route_failures):
             for person_id in set(mapping) - active:
                 mapping.pop(person_id, None)
+        for person_id in set(self.flow_hold_reasons) - active:
+            self.flow_hold_reasons.pop(person_id, None)
 
     def register_profile(self, profile: AgentProfile) -> None:
         self.base_limits[profile.person_id] = max(0.0, profile.free_walking_speed * profile.mobility)
+
+    def set_strategy_limit(self, person_id: str, limit: float | None) -> None:
+        if limit is None:
+            self.strategy_limits.pop(person_id, None)
+        else:
+            if not math.isfinite(float(limit)) or float(limit) < 0:
+                raise ValueError("strategy speed limit must be non-negative and finite")
+            self.strategy_limits[person_id] = float(limit)
+        self._apply_effective_speed(person_id)
 
     def validate_plan(self, plan: BehaviorPlan, motion: MotionSnapshot, snapshot_id: str, now: float) -> None:
         if plan.person_id != motion.person_id:
@@ -221,6 +234,16 @@ class PlanExecutor:
         if self.activity_hold_until.pop(person_id, None) is not None:
             self._apply_effective_speed(person_id)
 
+    def set_inflow_hold(self, person_id: str, action_id: str, held: bool) -> None:
+        reasons = self.flow_hold_reasons.setdefault(person_id, set())
+        if held:
+            reasons.add(str(action_id))
+        else:
+            reasons.discard(str(action_id))
+            if not reasons:
+                self.flow_hold_reasons.pop(person_id, None)
+        self._apply_effective_speed(person_id)
+
     def effective_speed(self, person_id: str) -> float:
         values = [self.base_limits.get(person_id, 1.35)]
         if person_id in self.strategy_limits:
@@ -228,6 +251,8 @@ class PlanExecutor:
         if person_id in self.hazard_limits:
             values.append(self.hazard_limits[person_id])
         if person_id in self.activity_hold_until:
+            values.append(0.0)
+        if person_id in self.flow_hold_reasons:
             values.append(0.0)
         return min(values)
 

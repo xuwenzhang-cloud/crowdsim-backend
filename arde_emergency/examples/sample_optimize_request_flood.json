@@ -1,0 +1,53 @@
+{
+  "workflowId": "during-event-flood-720-zz",
+  "methodId": "bilevel-autonomy",
+  "evaluation": {
+    "workflowId": "during-event-flood-720-zz",
+    "eventId": "zhengzhou-flood-2021",
+    "strategy": "口部封控 + 移动排水 + 远端绕行",
+    "scenario": "郑州「7·20」短时强降雨导致京广北隧道与地铁5号线口部积水",
+    "location": "京广快速路北隧道 - 地铁5号线五龙口段",
+    "finalScore": 71,
+    "verdict": "封控有效但排水与疏散不同步",
+    "primaryWeakness": "深水区封控过晚，排水与疏散不同步，仍有人员进入积水影响区。"
+  },
+  "workflow": {
+    "id": "during-event-flood-720-zz",
+    "stage": "evaluation-completed",
+    "scenario": {
+      "eventType": "urban_flood",
+      "location": "郑州市中心城区 / 二七·中原",
+      "text": "京广北隧道积水加深，地铁5号线地下空间受阻，中心城区需远端绕行",
+      "triggeredEvent": {
+        "eventId": "zhengzhou-flood-2021",
+        "eventType": "urban_flood",
+        "scenarioTitle": "郑州7·20城市内涝",
+        "floodDepth": 0.42
+      }
+    },
+    "experiment": {
+      "averageMetrics": {
+        "density": 3.6,
+        "speed": 0.58,
+        "pressure": 66,
+        "riskIndex": 81,
+        "congestionMinutes": 20
+      }
+    }
+  },
+  "experimentPayload": {
+    "baselineMetrics": {
+      "density": 3.6,
+      "speed": 0.58,
+      "pressure": 66,
+      "riskIndex": 81,
+      "congestionMinutes": 20
+    }
+  },
+  "options": {
+    "emergencyProfile": "urban_flood_720",
+    "macroStepMinutes": 2,
+    "useSimulationRollout": false,
+    "mapScene": "zhengzhou720"
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "workflowId": "during-event-recovery",
+  "methodId": "bilevel-autonomy",
+  "evaluation": {
+    "workflowId": "during-event-recovery",
+    "eventId": "recovery1",
+    "strategy": "逐步恢复通行 + 防回流",
+    "scenario": "高峰回落后秩序恢复阶段",
+    "location": "外滩观景平台外围通道",
+    "finalScore": 88,
+    "verdict": "风险已下降，需防止二次聚集",
+    "primaryWeakness": "过早解除限流可能导致回流二次聚集。"
+  },
+  "workflow": {
+    "id": "during-event-recovery",
+    "stage": "evaluation-completed",
+    "scenario": {
+      "eventType": "crowd_surge",
+      "location": "上海外滩",
+      "text": "主风险区密度下降，外围仍有回流迹象",
+      "triggeredEvent": {
+        "eventId": "recovery1",
+        "eventType": "crowd_surge",
+        "scenarioTitle": "恢复期防回流",
+        "floodDepth": 0.08
+      }
+    },
+    "experiment": {
+      "averageMetrics": {
+        "density": 2.4,
+        "speed": 1.05,
+        "pressure": 36,
+        "riskIndex": 34,
+        "congestionMinutes": 8
+      }
+    }
+  },
+  "experimentPayload": {
+    "baselineMetrics": {
+      "density": 2.4,
+      "speed": 1.05,
+      "pressure": 36,
+      "riskIndex": 34,
+      "congestionMinutes": 8
+    }
+  },
+  "options": {
+    "emergencyProfile": "combined",
+    "macroStepMinutes": 2,
+    "useSimulationRollout": false
+  }
+}

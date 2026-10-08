@@ -1,0 +1,59 @@
+{
+  "workflowId": "bund-crowd-historical-case",
+  "methodId": "bilevel-autonomy",
+  "evaluation": {
+    "workflowId": "bund-crowd-historical-case",
+    "eventId": "event1",
+    "strategy": "志愿者引导分流（事件已触发后的初始处置）",
+    "scenario": "节假日晚间外滩观景平台人群快速聚集（历史推演）",
+    "location": "上海外滩观景平台—南京东路步行廊道",
+    "finalScore": 71,
+    "verdict": "事件峰值已形成，初始引导不足以压住密度上升",
+    "primaryWeakness": "密度阈值触发偏晚，峰值已形成后再处置；入口未截流导致对冲人流持续汇入。"
+  },
+  "workflow": {
+    "id": "bund-crowd-historical-case",
+    "stage": "evaluation-completed",
+    "scenario": {
+      "eventType": "crowd_surge",
+      "location": "上海外滩",
+      "text": "依据外滩历史高峰情景推演：观景平台短时密度升高，南京东路廊道出现对冲与滞留，风险向外围转移。",
+      "triggeredEvent": {
+        "eventId": "event1",
+        "eventType": "crowd_surge",
+        "scenarioTitle": "外滩观景平台人群快速聚集（历史推演）",
+        "floodDepth": 0.0
+      }
+    },
+    "experiment": {
+      "averageMetrics": {
+        "density": 4.6,
+        "speed": 0.58,
+        "pressure": 86,
+        "riskIndex": 81,
+        "congestionMinutes": 24
+      }
+    }
+  },
+  "experimentPayload": {
+    "baselineMetrics": {
+      "density": 4.6,
+      "speed": 0.58,
+      "pressure": 86,
+      "riskIndex": 81,
+      "congestionMinutes": 24
+    },
+    "caseMeta": {
+      "id": "bund-crowd-historical",
+      "title": "外滩人群密集历史推演",
+      "mode": "historical_replay",
+      "note": "用外滩 SUMO 路网复现「事件已发生」后的调控，不代表实时监测接入。"
+    }
+  },
+  "options": {
+    "emergencyProfile": "crowd_crush",
+    "mapScene": "bund",
+    "macroStepMinutes": 2,
+    "useSimulationRollout": false
+  }
+}
