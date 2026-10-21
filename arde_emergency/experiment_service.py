@@ -15,6 +15,7 @@ from crowdsim.experiments.orchestrator import ExperimentOrchestrator
 from crowdsim.experiments.service import ControlServiceBundle
 from crowdsim.experiments.serve import ControlHttpServer, ControlRequestHandler, CONTROL_PREFIX
 from .experiment_report import ArdeReportService
+from .experiment_audit import AuditGateway, fingerprint
 
 
 def bound_requirement(scenario):
@@ -57,9 +58,91 @@ def bound_requirement(scenario):
 
 
 class ArdeExperimentOrchestrator(ExperimentOrchestrator):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.gateway = AuditGateway(self.gateway, self)
+
+    def audit_ack(self, active, command, result):
+        run = active['run']
+        scenario = active['experiment']['scenario']
+        evidence = active.setdefault('ardeAudit', {'version': 'audit-v1', 'seedRequested': run['seed'],
+            'scenarioFingerprint': fingerprint(scenario), 'manualControls': []})
+        action = command['action']
+        if action == 'reset':
+            actual = (result or {}).get('requirement') or {}
+            expected = 'sha256:' + bound_requirement(scenario).fingerprint
+            demand = (result or {}).get('demand') or {}
+            planned = demand.get('effective_count', demand.get('planned'))
+            valid = ((result or {}).get('type') == 'init' and bool((result or {}).get('run_id'))
+                and actual.get('fingerprint') == expected and actual.get('population_total') == scenario['population']
+                and command.get('seed') == run['seed'] and command.get('count') == scenario['population']
+                and (planned is None or planned == scenario['population']))
+            evidence['reset'] = {'verified': valid, 'runtimeRunId': (result or {}).get('run_id'),
+                'requirementFingerprint': actual.get('fingerprint'), 'population': actual.get('population_total'),
+                'seedRequested': command.get('seed'), 'demand': deepcopy((result or {}).get('demand', {})),
+                'scenario': deepcopy((result or {}).get('scenario', {}))}
+        elif action == 'set_event':
+            event = scenario.get('emergencyEvent') or {}
+            matches = all(command.get(key) == event.get(key, default) for key, default in
+                [('lng', None), ('lat', None), ('radius', 60.0), ('intensity', .85), ('growthSeconds', 30.0), ('decaySeconds', 0.0)])
+            matches = matches and command.get('duration') == event.get('durationSeconds', scenario['durationSeconds']) and command.get('eventType') == event.get('eventType', 'fire')
+            evidence['event'] = {'command': {k: v for k, v in command.items() if k != 'id'},
+                'id': command['id'], 'applied': (result or {}).get('status') == 'applied' and matches, 'beforeStart': not evidence.get('started', False)}
+        elif action == 'start':
+            evidence['started'] = (result or {}).get('status') == 'applied'
+        self.repository.update_run(active['user_id'], active['workspace_id'], run['run_id'], {'ardeAudit': deepcopy(evidence)})
+        if action == 'reset' and not evidence['reset']['verified']:
+            raise RuntimeError('ARDE reset evidence does not match the confirmed requirement fingerprint/population')
+        if action == 'set_event' and not evidence['event']['applied']:
+            raise RuntimeError('ARDE event evidence does not match the confirmed emergency')
+
+    def _mark_manual(self, user, workspace, run_id, action):
+        run = self.repository.get_run(user, workspace, run_id)
+        experiment = self.repository.get_experiment(user, workspace, run['experiment_id'])
+        if experiment['scenario'].get('ardeRequirementSnapshot'):
+            audit = deepcopy(run.get('ardeAudit') or {})
+            audit.setdefault('manualControls', []).append(action)
+            self.repository.update_run(user, workspace, run_id, {'ardeAudit': audit, 'manualIntervention': True})
+            if self._active and self._active['run']['run_id'] == run_id:
+                self._active['ardeAudit'] = audit
+
+    def _handle_frame(self, active, frame):
+        if (active['experiment']['scenario'].get('ardeRequirementSnapshot')
+                and active.get('accept_frames') and not active['terminal'].is_set()
+                and frame.get('run_id') == active.get('runtime_run_id')
+                and 'initialFrame' not in active.get('ardeAudit', {})):
+            crowd = sorted([{'id': p.get('id'), 'lng': p.get('lng'), 'lat': p.get('lat'),
+                'edge': p.get('edge'), 'state': p.get('state')} for p in frame.get('pedestrians', [])], key=lambda p: str(p['id']))
+            audit = active.setdefault('ardeAudit', {})
+            audit['initialFrame'] = {'timeSeconds': frame.get('step_seconds', frame.get('step')),
+                'personCount': len(crowd), 'fingerprint': fingerprint(crowd),
+                'scope': 'first observed frame before controller decisions; not complete future demand'}
+            self.repository.update_run(active['user_id'], active['workspace_id'], active['run']['run_id'], {'ardeAudit': deepcopy(audit)})
+        return super()._handle_frame(active, frame)
+
+    def pause_run(self, user, workspace, run_id):
+        result = super().pause_run(user, workspace, run_id)
+        self._mark_manual(user, workspace, run_id, 'pause')
+        return result
+
+    def resume_run(self, user, workspace, run_id):
+        result = super().resume_run(user, workspace, run_id)
+        self._mark_manual(user, workspace, run_id, 'resume')
+        return result
+
+    def stop_run(self, user, workspace, run_id):
+        result = super().stop_run(user, workspace, run_id)
+        self._mark_manual(user, workspace, run_id, 'stop')
+        return result
+
+    def manual_action(self, user, workspace, run_id, action, *, reason):
+        result = super().manual_action(user, workspace, run_id, action, reason=reason)
+        self._mark_manual(user, workspace, run_id, 'manual_action')
+        return result
+
     def health(self):
         return {**super().health(), "ardeRequirementBinding": "snapshot-v1",
-                "ardeConfigurationReview": "review-v1", "ardeFlowVersion": "20261021.2"}
+                "ardeConfigurationReview": "review-v1", "ardeFlowVersion": "20261021.4", "ardeFairComparison": "audit-v1"}
 
     def create_experiment(self, user_id, workspace_id, payload):
         scenario = payload.get("scenario") or {}

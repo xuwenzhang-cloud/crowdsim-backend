@@ -192,6 +192,6 @@ def test_arde_review_rejects_unrelated_changes_to_source():
 def test_arde_health_discloses_configuration_review_version(tmp_path):
     bundle = ArdeControlServiceBundle(data_dir=str(tmp_path))
     health = bundle.orchestrator.health()
-    assert health['ardeFlowVersion'] == '20261021.2'
+    assert health['ardeFlowVersion'] == '20261021.4'
     assert health['ardeConfigurationReview'] == 'review-v1'
     bundle.gateway.close()
