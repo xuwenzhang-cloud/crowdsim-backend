@@ -157,3 +157,41 @@ def test_arde_http_history_records_respect_workspace(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+def reviewed_scenario():
+    data = scenario()
+    source = deepcopy(data['ardeRequirementSnapshot'])
+    source['population']['total'] = 600
+    data['ardeSourceRequirementSnapshot'] = source
+    data['ardeConfigurationConfirmation'] = {'confirmed': True, 'changes': [
+        {'field': 'population', 'label': '人数', 'source': 600, 'value': 50, 'unit': '人'}]}
+    return data
+
+
+def test_arde_review_accepts_explicit_adjustments_without_modifying_source():
+    data = reviewed_scenario()
+    assert bound_requirement(data).population_total == 50
+    assert data['ardeSourceRequirementSnapshot']['population']['total'] == 600
+
+
+@pytest.mark.parametrize('confirmation', [{}, {'confirmed': False, 'changes': []}, {'confirmed': True, 'changes': []}])
+def test_arde_review_rejects_missing_or_inaccurate_confirmation(confirmation):
+    data = reviewed_scenario()
+    data['ardeConfigurationConfirmation'] = confirmation
+    with pytest.raises(ContractError, match='confirmed review'):
+        bound_requirement(data)
+
+
+def test_arde_review_rejects_unrelated_changes_to_source():
+    data = reviewed_scenario()
+    data['ardeRequirementSnapshot']['project']['title'] = 'silently replaced scene'
+    with pytest.raises(ContractError, match='only adjust'):
+        bound_requirement(data)
+
+
+def test_arde_health_discloses_configuration_review_version(tmp_path):
+    bundle = ArdeControlServiceBundle(data_dir=str(tmp_path))
+    health = bundle.orchestrator.health()
+    assert health['ardeFlowVersion'] == '20261021.2'
+    assert health['ardeConfigurationReview'] == 'review-v1'
+    bundle.gateway.close()

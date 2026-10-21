@@ -31,12 +31,35 @@ def bound_requirement(scenario):
     duration = requirement_observation_duration(spec.payload)
     if duration is not None and duration != scenario.get("durationSeconds"):
         raise ContractError("ARDE requirement duration differs from experiment duration")
+    source_raw = scenario.get("ardeSourceRequirementSnapshot")
+    if source_raw is not None:
+        source = RequirementSpec.parse(source_raw)
+        expected = deepcopy(source.payload)
+        expected["population"]["total"] = spec.population_total
+        if expected.get("schema_version") == 2:
+            expected["experiment"] = {**expected.get("experiment", {}), "duration_seconds": scenario["durationSeconds"]}
+        if spec.payload != expected:
+            raise ContractError("ARDE may only adjust source population and duration")
+        changes = []
+        for field, label, old, new, unit in (
+            ("population", "人数", source.population_total, spec.population_total, "人"),
+            ("durationSeconds", "时长", source.payload.get("experiment", {}).get("duration_seconds"), scenario["durationSeconds"], "秒"),
+        ):
+            if old is not None and old != new:
+                changes.append({"field": field, "label": label, "source": old, "value": new, "unit": unit})
+        confirmation = scenario.get("ardeConfigurationConfirmation") or {}
+        if confirmation.get("confirmed") is not True or confirmation.get("changes") != changes:
+            raise ContractError("ARDE source adjustments require an exact confirmed review")
+        event = scenario.get("emergencyEvent") or {}
+        if event.get("enabled") and source.payload["scenario"]["event_category"]["id"] != "emergency":
+            raise ContractError("ARDE fire injection requires an emergency source requirement")
     return spec
 
 
 class ArdeExperimentOrchestrator(ExperimentOrchestrator):
     def health(self):
-        return {**super().health(), "ardeRequirementBinding": "snapshot-v1"}
+        return {**super().health(), "ardeRequirementBinding": "snapshot-v1",
+                "ardeConfigurationReview": "review-v1", "ardeFlowVersion": "20261021.2"}
 
     def create_experiment(self, user_id, workspace_id, payload):
         scenario = payload.get("scenario") or {}
