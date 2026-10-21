@@ -29,7 +29,7 @@ class PlanExecutor:
         self.strategy_limits: Dict[str, float] = {}
         self.hazard_limits: Dict[str, float] = {}
         self.wait_until: Dict[str, float] = {}
-        self.activity_hold_until: Dict[str, float] = {}
+        self.activity_hold_until: Dict[str, float | None] = {}
         self.flow_hold_reasons: Dict[str, set[str]] = {}
         self.base_limits: Dict[str, float] = {}
         self.results: Dict[str, PlanExecutionResult] = {}
@@ -223,15 +223,16 @@ class PlanExecutor:
             self.hazard_limits[person_id] = max(0.0, float(limit))
         self._apply_effective_speed(person_id)
 
-    def hold_activity(self, person_id: str, until: float) -> None:
-        deadline = float(until)
-        if not math.isfinite(deadline):
+    def hold_activity(self, person_id: str, until: float | None) -> None:
+        deadline = float(until) if until is not None else None
+        if deadline is not None and not math.isfinite(deadline):
             raise ValueError("activity hold deadline must be finite")
         self.activity_hold_until[person_id] = deadline
         self._apply_effective_speed(person_id)
 
     def release_activity_hold(self, person_id: str) -> None:
-        if self.activity_hold_until.pop(person_id, None) is not None:
+        if person_id in self.activity_hold_until:
+            self.activity_hold_until.pop(person_id)
             self._apply_effective_speed(person_id)
 
     def set_inflow_hold(self, person_id: str, action_id: str, held: bool) -> None:

@@ -19,6 +19,13 @@ class ReportService:
         if not experiment:
             raise LookupError("EXPERIMENT_NOT_FOUND")
         runs = self.repository.list_runs(user_id, workspace_id, experiment_id)
+        if experiment.get("duringObservation"):
+            from .during_observation import observation_report
+            # Do not publish a pre-reset report after its records were removed.
+            with self.repository._lock:
+                experiment = self.repository.get_experiment(user_id, workspace_id, experiment_id)
+                runs = self.repository.list_runs(user_id, workspace_id, experiment_id)
+                return observation_report(self.repository, user_id, workspace_id, experiment, runs)
         is_during = bool(experiment.get("scenario", {}).get("presetId"))
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         run_rows = []

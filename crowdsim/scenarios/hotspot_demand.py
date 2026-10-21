@@ -163,7 +163,12 @@ def build_hotspot_demand(
     release_delay_window = hotspot.get("visitor_release_delay_seconds", [0.0, 0.0])
     release_schedule = None
     dwell_start = dwell_end = None
-    if activity_window is not None:
+    requirement_activity = hotspot.get("requirement_activity")
+    if requirement_activity is not None:
+        event_start, event_end = requirement_activity["start_seconds"], requirement_activity["end_seconds"]
+        if event_end is not None:
+            release_schedule = [event_end] * visitor_count
+    elif activity_window is not None:
         event_start, event_end = _time_window(activity_window, "activity_window_seconds")
         release_delay_start, release_delay_end = _time_window(
             release_delay_window,
@@ -300,11 +305,10 @@ def build_hotspot_demand(
             planned_arrival = depart + prefix_distance / reference_speed
         planned_departure_times.append(depart)
         planned_arrival_times.append(planned_arrival)
-        duration = None if release_schedule is not None else rng.uniform(dwell_start, dwell_end)
+        duration = None if requirement_activity is not None or release_schedule is not None else rng.uniform(dwell_start, dwell_end)
         planned_release = release_schedule[index] if release_schedule is not None else None
-        planned_visit_end_times.append(
-            planned_release if planned_release is not None else planned_arrival + duration
-        )
+        if planned_release is not None or duration is not None:
+            planned_visit_end_times.append(planned_release if planned_release is not None else planned_arrival + duration)
         person = ET.Element("person", {
             "id": f"hotspot.{hotspot_id}.{index:04d}",
             "depart": f"{depart:.2f}",
@@ -320,7 +324,7 @@ def build_hotspot_demand(
                 "key": HOTSPOT_RELEASE_TIME_PARAM,
                 "value": f"{planned_release:.2f}",
             })
-        else:
+        elif duration is not None:
             ET.SubElement(person, "param", {
                 "key": HOTSPOT_DWELL_SECONDS_PARAM,
                 "value": f"{duration:.2f}",
@@ -409,6 +413,7 @@ def build_hotspot_demand(
     ET.indent(tree, space="    ")
     tree.write(output_path, encoding="utf-8", xml_declaration=True)
     return {
+        **({"requirement_activity": copy.deepcopy(requirement_activity)} if requirement_activity is not None else {}),
         "hotspot_id": hotspot_id,
         "target_edge": target_edge,
         "target_edges": list(target_edges),

@@ -33,6 +33,10 @@ class EventBus:
         with self._condition:
             return [deepcopy(event) for event in self._events if event["sequence"] > sequence and (run_id is None or event["runId"] == run_id)]
 
+    def discard_runs(self, run_ids) -> None:
+        with self._condition:
+            self._events = deque((event for event in self._events if event["runId"] not in run_ids), maxlen=self._events.maxlen)
+
     def wait_after(self, sequence: int, *, run_id: str | None = None, timeout: float = 15.0) -> list[dict[str, Any]]:
         with self._condition:
             matches = [event for event in self._events if event["sequence"] > sequence and (run_id is None or event["runId"] == run_id)]

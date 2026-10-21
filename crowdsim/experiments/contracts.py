@@ -57,10 +57,13 @@ def _reject_secret_fields(value: Any, path: str) -> None:
             _reject_secret_fields(item, f"{path}[{index}]")
 
 
-def validate_experiment_config(payload: Mapping[str, Any], *, allow_during_replay=False) -> dict[str, Any]:
+def validate_experiment_config(payload: Mapping[str, Any], *, allow_during_replay=False, allow_during_observation=False) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         raise ContractError("experiment config must be an object")
     data = deepcopy(dict(payload))
+    if not allow_during_observation and ("duringObservation" in data or (
+            isinstance(data.get("scenario"), Mapping) and "observationBinding" in data["scenario"])):
+        raise ContractError("第一类实验必须通过已确认需求的专用接口创建。")
     if (data.get("duringReplay") is not None or "D2" in (data.get("methods") or [])) and not allow_during_replay:
         raise ContractError("策略重跑必须通过来源实验的确认接口创建。")
     request_id = data.get("clientRequestId")

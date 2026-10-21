@@ -99,6 +99,7 @@ class AgentState:
     hotspot_last_route_change_time: Optional[float] = None
     hotspot_next_route_check: float = 0.0
     hotspot_dwell_until: Optional[float] = None
+    hotspot_activity_phase: Optional[str] = None
     # Display evidence is separate from blocked_duration used by behavior rules.
     low_speed_duration: float = 0.0
     critical_density_duration: float = 0.0

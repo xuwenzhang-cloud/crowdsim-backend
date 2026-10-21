@@ -35,6 +35,8 @@ class FrameSerializer:
         pedestrian = {"id": motion.person_id, "lng": motion.lon, "lat": motion.lat, "speed": round(motion.speed, 3), **runtime.visual_states[motion.person_id], "flood_impact": round(runtime.hazard_impact_for(motion.person_id), 3), "congestion": round(congestion, 3), "edge": motion.edge_id, "display_edge": runtime.adapter.display_edge(motion.person_id, motion.edge_id), "synthetic": False, "data_source": "sumo_simulation", "state": {"age_group": profile.age_group, "age_band": profile.age_band, "gender": profile.gender, "origin": profile.origin, "crowd_role": profile.crowd_role, "nationality": profile.nationality, "native_language": profile.native_language, "mobility": round(profile.mobility, 3), "risk_tolerance": round(profile.risk_tolerance, 3), "familiarity": round(profile.familiarity, 3), "group_size": 1 + len(state.companion_ids), "perception_radius": round(profile.perception_radius, 2), "crowding_tolerance": round(profile.crowding_tolerance, 3), "following_tendency": round(profile.following_tendency, 3), "authority_compliance": round(profile.authority_compliance, 3), "stress_susceptibility": round(profile.stress_susceptibility, 3), "group_cohesion": round(profile.group_cohesion, 3), "nearby_people": max(0, runtime.local_people_count(motion.person_id) - 1), "local_density": runtime.local_density_for(motion.person_id), "density_level": runtime.density_level_for(motion.person_id), "stress": round(state.stress, 3), "perceived_risk": round(state.perceived_risk, 3), "perceived_crowding": round(state.perceived_crowding, 3), "fatigue": round(state.fatigue, 3), "activity_state": state.activity_state, "hotspot_dwell_until": state.hotspot_dwell_until, "decision": state.current_plan.proposed_action if state.current_plan else "continue", "decision_reason": state.current_plan.reason if state.current_plan else "not_due", "decision_confidence": state.current_plan.confidence if state.current_plan else None, "decision_source": state.current_plan.source if state.current_plan else "rule"}}
 
         agent = runtime.latest_metrics.get("observation", {}).get("agents", {}).get(motion.person_id, {})
+        if state.hotspot_activity_phase is not None:
+            pedestrian["state"]["hotspot_activity_phase"] = state.hotspot_activity_phase
         pedestrian["state"].update({key: agent.get(key) for key in
             ("in_scope", "cell_id", "behavior_state", "behavior_reason", "crowded", "psychological_state")})
         return pedestrian
@@ -91,6 +93,11 @@ class FrameSerializer:
         }
 
         sample = measured.get("observation")
+        if getattr(runtime, "_hotspot_activity", None) and runtime.observation_end_reason:
+            metrics["observation_completion"] = {
+                "activity": dict(runtime._hotspot_activity), "end_reason": runtime.observation_end_reason,
+                "time_seconds": runtime.time_seconds, "population": population, "state": runtime.state.value,
+            }
         metrics["observations"] = {key: sample[key] for key in
             ("schema_version", "snapshot_id", "time_seconds", "metric_ids", "global", "cells", "boundaries")} if sample else None
         if sample and "evacuation" in sample:

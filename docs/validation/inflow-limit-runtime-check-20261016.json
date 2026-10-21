@@ -1,0 +1,209 @@
+{
+  "date": "2026-10-16",
+  "status": "partial_pass",
+  "code_commit": "4f1ffbf",
+  "scope": "Real SUMO 1.27.0; independent runtimes, no real model call, no UI or shared-service execution acceptance.",
+  "production_code_changed": false,
+  "scenario": {
+    "preset_id": "memorial-tower-during-v1",
+    "population": 700,
+    "seed": 20260908,
+    "duration_seconds": 1800
+  },
+  "policy": [
+    {
+      "entryId": "178411801#0",
+      "startSeconds": 1,
+      "endSeconds": 120,
+      "rate": 0.7
+    },
+    {
+      "entryId": "177931018#0",
+      "startSeconds": 1,
+      "endSeconds": 120,
+      "rate": 0.7
+    },
+    {
+      "entryId": "monument_m3",
+      "startSeconds": 1,
+      "endSeconds": 120,
+      "rate": 0.7
+    },
+    {
+      "entryId": "178411801#0",
+      "startSeconds": 120,
+      "endSeconds": 360,
+      "rate": 0.5
+    },
+    {
+      "entryId": "177931018#0",
+      "startSeconds": 120,
+      "endSeconds": 360,
+      "rate": 0.5
+    },
+    {
+      "entryId": "monument_m3",
+      "startSeconds": 120,
+      "endSeconds": 360,
+      "rate": 0.5
+    }
+  ],
+  "actual_apply_times_seconds": [
+    1,
+    1,
+    1,
+    120,
+    120,
+    120
+  ],
+  "comparison": {
+    "status": "effects_verified_with_targeting_issue",
+    "baseline": {
+      "first_crowding_seconds": 130.5,
+      "crowding_duration_seconds": 1679.5,
+      "crowded_peak": 477,
+      "red_peak": 0,
+      "density_peak": 2.119171363736183,
+      "blocked_peak": 494,
+      "held_peak": 0,
+      "arrived": 140,
+      "completion_rate": 0.2,
+      "t95_seconds": null,
+      "observed_until": 1800.0
+    },
+    "metered": {
+      "first_crowding_seconds": 143.5,
+      "crowding_duration_seconds": 884.5,
+      "crowded_peak": 624,
+      "red_peak": 162,
+      "density_peak": 2.5620379181611885,
+      "blocked_peak": 324,
+      "held_peak": 208,
+      "arrived": 695,
+      "completion_rate": 0.9928571428571429,
+      "t95_seconds": 1347.5,
+      "observed_until": 1800.0
+    },
+    "same_demand_sha256": "4f848b4aafa6895ebc1e16ae94a4f47c045f466057f1348f74bd81a0db39844a",
+    "pre_control_samples_identical": 1,
+    "effects_verified": true,
+    "policy_improvement_not_assumed": true,
+    "output": "/Users/omega/Documents/Codefield_Cursor/crowdsim-backend/runs/inflow_validation/20261016T105306",
+    "limitation": "One paired seed; isolated direct runtime commands, not a UI/control-service/model acceptance.",
+    "pure_inflow_targeting_verified": false,
+    "targeting_issue": {
+      "confirmed": true,
+      "smoke_held_people": 65,
+      "already_dwelling_people": 40,
+      "finding": "Candidate selection includes already-dwelling hotspot visitors whose next outbound edge is the controlled gate."
+    }
+  },
+  "independent_audit": {
+    "status": "passed",
+    "runs": [
+      {
+        "variant": "baseline",
+        "run_id": "run-6e37439eec764201a0ee828565c9c3ef",
+        "steps": 3600,
+        "trajectory_rows": 2330254,
+        "departed": 700,
+        "arrived": 140,
+        "crowded_peak": 477,
+        "red_peak": 0,
+        "held_peak": 0,
+        "checks": [
+          "per-step trajectory vs counts",
+          "population conservation",
+          "independent sustained crowding episodes",
+          "arrival lifecycle vs completion",
+          "baseline has no holds",
+          "all holds removed after expiry",
+          "no control actions"
+        ]
+      },
+      {
+        "variant": "metered",
+        "run_id": "run-208b032bb0b442e4a0dd305f2bded577",
+        "steps": 3600,
+        "trajectory_rows": 1637049,
+        "departed": 700,
+        "arrived": 695,
+        "crowded_peak": 624,
+        "red_peak": 162,
+        "held_peak": 208,
+        "checks": [
+          "per-step trajectory vs counts",
+          "population conservation",
+          "independent sustained crowding episodes",
+          "arrival lifecycle vs completion",
+          "baseline has no holds",
+          "all holds removed after expiry",
+          "real SUMO stopped speeds and positive release commands"
+        ]
+      }
+    ]
+  },
+  "mechanism_checks": {
+    "real_zero_speed_person_steps": 20773,
+    "held_person_steps": 20773,
+    "speed_restoration": {
+      "status": "passed",
+      "purpose": "Short mechanism test, not a full outcome comparison",
+      "run_id": "run-9ff647868b4341d5819c9894ae6ccb45",
+      "run_directory": "/Users/omega/Documents/Codefield_Cursor/crowdsim-backend/runs/run-9ff647868b4341d5819c9894ae6ccb45",
+      "seed": 20260908,
+      "end_seconds": 180.0,
+      "applied_at": 120.0,
+      "expires_at": 140,
+      "held_at_expiry": 65,
+      "all_waiters_zero_speed_before_expiry": true,
+      "all_waiters_speed_limit_restored": 65,
+      "all_later_holds_zero": true,
+      "restored_positive_speed_people": 25,
+      "remaining_activity_holds": 40,
+      "remaining_strategy_zero_limits": 0,
+      "previously_held_moving_at_150": 25,
+      "wall_seconds": 98.31
+    },
+    "all_holds_removed_after_policy_expiry": true
+  },
+  "targeting_issue": {
+    "source": "crowdsim/core/simulation_runtime.py::_entry_meter_candidates",
+    "description": "Selection only checks whether the next walking edge is the gate; it does not exclude hotspot_dwelling agents or check inbound direction.",
+    "observed_in_smoke": {
+      "control_marked_people": 65,
+      "already_in_planned_dwell": 40,
+      "positive_speed_limit_restored": 25
+    },
+    "impact": "Control queues are not equivalent to additional waiting caused by the measure; the admission cohort can include outbound-stage planned dwellers.",
+    "example": {
+      "person_id": "hotspot.people_heroes_monument.0034",
+      "time_seconds": 140,
+      "edge": "679361567#1",
+      "activity_state": "hotspot_dwelling",
+      "speed": 0.0,
+      "initial_target_edge": "679361567#1",
+      "outbound_route_prefix": [
+        "679361567#1",
+        "178411801#0",
+        "906417852#0",
+        "177931046"
+      ]
+    },
+    "fixed": false
+  },
+  "test_rounds": {
+    "full_paired_runs": 2,
+    "short_smoke_runs": 2,
+    "note": "First smoke audit incorrectly assumed every unheld agent must have positive speed; repeat checked restoration subject to remaining activity limits. No production change was made."
+  },
+  "limitations": [
+    "One paired seed only; no statistical or general effectiveness claim.",
+    "Higher completion and shorter congestion duration coexist with higher peak density and red-state count.",
+    "Direct runtime actions applied at exactly 1/120 s; control-service dispatch timing was not tested and historical service runs used 1.5/120.5 s.",
+    "The 208-person control marker peak includes all control constraints; it is not an independently isolated additional queue cost.",
+    "Candidate selection should be corrected before treating this as validated directional inbound-only control."
+  ],
+  "raw_evidence_directory": "/Users/omega/Documents/Codefield_Cursor/crowdsim-backend/runs/inflow_validation/20261016T105306",
+  "plot": "/Users/omega/Documents/Codefield_Cursor/crowdsim-backend/runs/inflow_validation/20261016T105306/comparison.png"
+}

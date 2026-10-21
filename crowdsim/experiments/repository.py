@@ -179,6 +179,53 @@ class CrowdSimRepository:
     def update_run(self, user_id, workspace_id, run_id, values):
         return self._update("runs", {"user_id": str(user_id), "workspace_id": str(workspace_id), "run_id": str(run_id)}, values)
 
+    def validate_observation_reset(self, user_id, workspace_id, experiment_id, expected_run_ids):
+        from .during_observation_reset import runtime_paths, validate_reset
+        with self._lock:
+            experiment = self.get_experiment(user_id, workspace_id, experiment_id)
+            runs = self.list_runs(user_id, workspace_id, experiment_id)
+            validate_reset(experiment, runs, expected_run_ids)
+            ids = {run["run_id"] for run in runs}
+            owns = lambda row: row.get("user_id") == str(user_id) and row.get("workspace_id") == str(workspace_id)
+            other_runs = [row for row in self._memory["runs"] if not (owns(row) and row["run_id"] in ids)]
+            if any((row.get("duringReplay") or {}).get("sourceExperimentId") == experiment_id
+                   for row in self._memory["experiments"] if row["experiment_id"] != experiment_id):
+                from .contracts import ContractError
+                raise ContractError("此实验仍有关联策略重跑，未清除来源结果。")
+            runtime_paths(runs, other_runs)
+            return experiment, runs
+
+    def reset_observation(self, user_id, workspace_id, experiment_id, expected_run_ids):
+        from .during_observation_reset import remove_runtime_files
+        with self._lock:
+            experiment, runs = self.validate_observation_reset(user_id, workspace_id, experiment_id, expected_run_ids)
+            if not runs and experiment["status"] == "draft":
+                return self.get_experiment(user_id, workspace_id, experiment_id)
+            ids = {run["run_id"] for run in runs}
+            owns = lambda row: row.get("user_id") == str(user_id) and row.get("workspace_id") == str(workspace_id)
+            remove_runtime_files(runs, [])
+            # Keep the run IDs until every result collection is flushed. If a
+            # write fails, another attempt can finish deletion without backups.
+            for kind in (*self.APPEND_ONLY, "reports", "runs"):
+                def deleted(row):
+                    return owns(row) and (row.get("experiment_id") == experiment_id if kind == "reports" else row.get("run_id") in ids)
+                previous = self._memory[kind]
+                self._memory[kind] = [row for row in previous if not deleted(row)]
+                try:
+                    self._flush(kind)
+                except Exception:
+                    self._memory[kind] = previous
+                    raise
+            version = self.get_experiment(user_id, workspace_id, experiment_id).get("executionVersion", 0)
+            document = next(row for row in self._memory["experiments"] if owns(row) and row["experiment_id"] == experiment_id)
+            previous = deepcopy(document)
+            try:
+                self.update_experiment(user_id, workspace_id, experiment_id, {"status": "draft", "stop_requested": False, "executionVersion": version + 1})
+            except Exception:
+                document.clear(); document.update(previous)
+                raise
+            return self.get_experiment(user_id, workspace_id, experiment_id)
+
     def record(self, kind: str, user_id: str, workspace_id: str, run_id: str, payload: dict[str, Any]):
         if kind not in self.APPEND_ONLY:
             raise ValueError(f"unknown record kind: {kind}")

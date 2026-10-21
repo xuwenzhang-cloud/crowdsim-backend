@@ -18,7 +18,7 @@ from crowdsim.decision.hotspot_route_choice import HotspotRouteChoice
 from crowdsim.decision.plan_executor import PlanExecutor
 from crowdsim.decision.route_provider import RouteProvider
 from crowdsim.control.inflow_meter import InflowMeter
-from crowdsim.domain.crowdsim_models import AgentProfile, GroupRecord
+from crowdsim.domain.crowdsim_models import AgentProfile, BehaviorPlan, GroupRecord
 from crowdsim.domain.crowd_visual_state import CrowdVisualPolicy, STATE_COLORS
 from crowdsim.domain.group_manager import GroupManager
 from crowdsim.domain.population_profiles import PopulationProfileSampler
@@ -44,6 +44,7 @@ from crowdsim.core.state_updater import StateUpdater
 from crowdsim.core.during_observation import DuringObservation
 from crowdsim.domain.during_preset import load_during_preset, preset_fingerprint
 from crowdsim.domain.requirement_spec import RequirementSpec
+from crowdsim.domain.hotspot_activity import requirement_hotspot_activity, activity_phase
 from crowdsim.infrastructure.performance_probe import PerformanceOptions, PerformanceProbe, timed
 from crowdsim.modeling_algorithm.individual_model.pipeline import IndividualModelingEngine
 from crowdsim.scenarios.generated_hotspot_demand import HotspotDemandSpec
@@ -216,6 +217,8 @@ class SimulationRuntime:
         self.decision_candidates = {}
         self.commands = RuntimeCommandQueue()
         self.requirement_record: dict | None = None
+        self._hotspot_activity = None
+        self._hotspot_exit_applied: set[str] = set()
         self.requirement_id: str | None = None
         self.during_preset = json.loads(json.dumps(during_preset)) if during_preset else None
         self.during_observer = DuringObservation(self.during_preset) if self.during_preset else None
@@ -326,8 +329,11 @@ class SimulationRuntime:
                 # when the scene has no legacy Bund POI/activity-plan catalog.
                 self.hotspot_catalog = HotspotCatalog(self.network, self.hotspot_demand_spec.config_path)
             if self.generated_demand_spec is not None:
+                activity_options = ({"activity": self._hotspot_activity,
+                                     "observation_scope": self.observation_collector.scope}
+                                    if self.demand_mode == "generated_hotspot" and self._hotspot_activity else {})
                 source, self.demand_generation_report = self.generated_demand_spec.generate(
-                    run_directory, self._net_path_from_config(), self.demand_count
+                    run_directory, self._net_path_from_config(), self.demand_count, **activity_options
                 )
                 if self.hotspot_catalog is not None:
                     self.hotspot_catalog.apply_demand_timing(self.demand_generation_report)
@@ -800,10 +806,15 @@ class SimulationRuntime:
         target_edges = getattr(self.population, "hotspot_target_edges", {})
         dwell_seconds = getattr(self.population, "hotspot_dwell_seconds", {})
         release_times = getattr(self.population, "hotspot_release_times", {})
+        activity = getattr(self, "_hotspot_activity", None)
         for person_id, motion in step.persons.items():
             if person_id not in hotspot_ids:
                 continue
             state = self.population.states[person_id]
+            if activity:
+                state.hotspot_activity_phase = activity_phase(activity, step.time_seconds)
+                if state.hotspot_activity_phase == "ended":
+                    continue  # The next safe boundary redirects late arrivals too.
             if state.activity_state == "walking":
                 state.activity_state = "hotspot_approaching"
             if state.activity_state != "hotspot_approaching":
@@ -818,7 +829,9 @@ class SimulationRuntime:
                 continue
             release_time = release_times.get(person_id)
             duration = dwell_seconds.get(person_id)
-            if release_time is not None:
+            if activity:
+                deadline = activity["end_seconds"]
+            elif release_time is not None:
                 deadline = float(release_time)
             elif duration is not None:
                 deadline = step.time_seconds + float(duration)
@@ -830,12 +843,22 @@ class SimulationRuntime:
             state.activity_state = "hotspot_dwelling"
             state.hotspot_dwell_until = deadline
             state.current_goal = hotspot_ids[person_id]
-            state.next_decision_time = max(state.next_decision_time, deadline)
+            if deadline is not None:
+                state.next_decision_time = max(state.next_decision_time, deadline)
 
     def _maintain_hotspot_activity(self, now: float) -> None:
         """Release completed hotspot dwells without changing the walking stage."""
         if self.plan_executor is None:
             return
+        activity = getattr(self, "_hotspot_activity", None)
+        if activity:
+            for person_id in getattr(self.population, "hotspot_ids", {}):
+                state = self.population.states.get(person_id)
+                if state is not None:
+                    state.hotspot_activity_phase = activity_phase(activity, now)
+            if activity_phase(activity, now) == "ended":
+                self._depart_hotspot_visitors(now)
+                return
         for person_id, deadline in tuple(self.plan_executor.activity_hold_until.items()):
             state = self.population.states.get(person_id)
             guided_exit = bool(state and any(
@@ -843,13 +866,60 @@ class SimulationRuntime:
                 and str(detail.get("command") or "inform") in {"disperse", "evacuate"}
                 for event_id, detail in state.known_events.items()
             ))
-            if not guided_exit and now + 1e-9 < deadline:
+            if not guided_exit and (deadline is None or now + 1e-9 < deadline):
                 continue
             self.plan_executor.release_activity_hold(person_id)
             if state is not None:
                 state.activity_state = "hotspot_departing"
                 state.hotspot_dwell_until = None
                 state.next_decision_time = min(state.next_decision_time, now)
+
+    def _depart_hotspot_visitors(self, now: float) -> None:
+        """End this activity intrinsically, retaining positions and real exits."""
+        if self.current is None:
+            return
+        for person_id, motion in self.current.persons.items():
+            if person_id not in self.population.hotspot_ids or person_id in self._hotspot_exit_applied:
+                continue
+            state = self.population.states[person_id]
+            dwelling = state.activity_state == "hotspot_dwelling"
+            state.activity_state = "hotspot_departing"
+            if dwelling or motion.remaining_stage_count == 1:
+                # The existing second walk already leads to an external exit.
+                self.plan_executor.release_activity_hold(person_id)
+                state.hotspot_dwell_until = None
+                state.next_decision_time = min(state.next_decision_time, now)
+                self._hotspot_exit_applied.add(person_id)
+                continue
+            if motion.stage_type != tc.STAGE_WALKING or motion.edge_id.startswith(":"):
+                continue  # Finish the junction movement before replacing a walk.
+            self.plan_executor.hold_activity(person_id, None)
+            if not self.plan_executor.route_ready(person_id, now):
+                continue
+            try:
+                final = self.adapter.remaining_person_stages(person_id)[-1]
+                hotspot = self.hotspot_catalog.hotspots[self.population.hotspot_ids[person_id]]
+                forbidden = set(hotspot.get("excluded_edges", ()))
+                if motion.edge_id not in hotspot["target_edges"]:
+                    forbidden.update(hotspot["target_edges"])
+                candidate = self.route_provider.build_candidate(
+                    motion, target_id=f"hotspot-exit:{final.edges[-1]}",
+                    target_edge=final.edges[-1], arrival_position=float(final.arrivalPos),
+                    forbidden_edges=forbidden - {motion.edge_id},
+                )
+            except (ValueError, IndexError) as exc:
+                self.plan_executor.defer_route(person_id, now, str(exc))
+                continue
+            plan = BehaviorPlan(person_id, self.snapshot_id, "change_goal", target_id=candidate.target_id,
+                                route_edges=candidate.edges, arrival_position=candidate.arrival_position,
+                                reason="hotspot activity ended; proceed to external exit", source="rule", decided_at=now)
+            result = self.apply_plan(plan)
+            if result.status == "partial_failure":
+                raise RuntimeError(result.reason)
+            if result.status == "applied":
+                self.plan_executor.release_activity_hold(person_id)
+                state.hotspot_dwell_until = None
+                self._hotspot_exit_applied.add(person_id)
 
     def _abort_resources(self) -> None:
         self._cleanup_resources()
@@ -929,6 +999,8 @@ class SimulationRuntime:
         duration = requirement_observation_duration(requirement)
         self.requirement_record = json.loads(json.dumps(record, ensure_ascii=False))
         self.requirement_id = str(record.get("requirement_id") or "") or None
+        self._hotspot_activity = (requirement_hotspot_activity(requirement)
+                                  if self.demand_mode == "generated_hotspot" else None)
         self.population.profile_sampler.configure_distributions(distributions)
         self._observation_duration_seconds = duration
         self.timeline_end_seconds = duration if duration is not None else self._scenario_timeline_end_seconds
@@ -1453,6 +1525,7 @@ class SimulationRuntime:
 
     def diagnostics(self) -> dict:
         return {
+            "run_id": self.run_id,
             "state": self.state.value,
             "snapshot_index": self.snapshot_index,
             "time_seconds": self.time_seconds,
@@ -1507,6 +1580,7 @@ class SimulationRuntime:
             "timeline_start_seconds": 0.0,
             "timeline_end_seconds": self.timeline_end_seconds,
             "timeline_step_count": steps,
+            **({"hotspot_activity": dict(self._hotspot_activity)} if self._hotspot_activity else {}),
         }
 
     def demand_diagnostics(self) -> dict:

@@ -8,9 +8,11 @@ import json
 import logging
 import os
 import socket
+import re
 from urllib.parse import urlsplit
 
 from dialog_storage.repository import ConversationRepository
+from dialog_storage.during_requirements import DuringRequirementRepository, RequirementConflict
 from dialogue_service.logging_setup import configure_logging
 
 
@@ -36,6 +38,7 @@ class DialogueHttpServer(ThreadingHTTPServer):
         super().__init__(address, DialogueHandler)
         self.repository = ConversationRepository()
         self.workbench_repository = ConversationRepository(self.repository.root / "workbench")
+        self.during_requirements = DuringRequirementRepository(self.repository.root / "during-requirements")
         self.repository.root.mkdir(parents=True, exist_ok=True)
         self.workbench_repository.root.mkdir(parents=True, exist_ok=True)
         self.allowed_origins = _allowed_origins()
@@ -104,6 +107,12 @@ class DialogueHandler(BaseHTTPRequestHandler):
         if not self._permitted():
             return
         path = urlsplit(self.path).path
+        match = re.fullmatch(r"/during/conversations/([A-Za-z0-9_-]{1,120})/requirements", path)
+        if match:
+            try:
+                return self._send(200, {"record": self.server.during_requirements.load(match.group(1))})
+            except (OSError, ValueError):
+                return self._send(503, {"message": "事中需求档案无法读取，未创建空白档案"})
         if path == "/health":
             self._send(200, {"service": "crowdsim-dialogue-storage"})
         elif path == "/conversations":
@@ -118,7 +127,13 @@ class DialogueHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         try:
-            if path == "/conversations/sync":
+            match = re.fullmatch(r"/during/conversations/([A-Za-z0-9_-]{1,120})/requirements", path)
+            if match:
+                payload = self._json_body()
+                record = self.server.during_requirements.save(match.group(1), state=payload.get("state"),
+                    expected_revision=payload.get("expectedRevision"), mutation_id=payload.get("mutationId"))
+                self._send(200, {"record": record})
+            elif path == "/conversations/sync":
                 payload = self._json_body()
                 count = self.server.repository.replace_all(payload.get("conversations"))
                 self._send(200, {"saved": count})
@@ -131,6 +146,8 @@ class DialogueHandler(BaseHTTPRequestHandler):
                 self._send(200, respond(self._json_body()))
             else:
                 self._send(404, {"message": "未找到接口"})
+        except RequirementConflict as exc:
+            self._send(409, {"code": "DURING_REQUIREMENT_CONFLICT", "message": str(exc), "record": exc.record})
         except ValueError as exc:
             logger.warning("Invalid dialogue request %s: %s", path, exc)
             self._send(400, {"message": str(exc)})

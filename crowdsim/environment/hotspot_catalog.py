@@ -499,6 +499,11 @@ class HotspotCatalog:
             "timeline_shift_seconds", "timeline_alignment_status",
         ):
             item[key] = copy.deepcopy(report[key])
+        if report.get("requirement_activity"):
+            item["requirement_activity"] = copy.deepcopy(report["requirement_activity"])
+            item["visitor_release_delay_seconds"] = [0, 0] if report["requirement_activity"]["end_seconds"] is not None else None
+            item["visitor_destination_edges"] = list(report["destination_edge_counts"])
+            item["destination_edge_weights"] = None
 
     def serialize(self) -> list[dict]:
         result = []
@@ -518,6 +523,7 @@ class HotspotCatalog:
                 "excluded_edges": list(item["excluded_edges"]),
                 "visitor_spawn_edges": list(item["visitor_spawn_edges"]),
                 "visitor_exit_edges": list(item["visitor_exit_edges"]),
+                **({"requirement_activity": copy.deepcopy(item["requirement_activity"])} if item.get("requirement_activity") else {}),
                 "visitor_destination_edges": list(item["visitor_destination_edges"]),
                 "park_entry_edges": list(item["park_entry_edges"]),
                 "external_approach_edges": list(item["external_approach_edges"]),

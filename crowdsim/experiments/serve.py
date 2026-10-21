@@ -122,6 +122,15 @@ class ControlRequestHandler(BaseHTTPRequestHandler):
             match = re.fullmatch(rf"{CONTROL_PREFIX}/experiments/([^/]+)/report", path)
             if match:
                 return self._send_json(200, self.bundle.reports.generate(user_id, workspace_id, match.group(1)))
+            match = re.fullmatch(rf"{CONTROL_PREFIX}/experiments/([^/]+)/observation-(interpretation|conclusion)", path)
+            if match:
+                from .during_observation_reports import interpretation
+                return self._send_json(200, interpretation(self.bundle.repository, user_id, workspace_id, match.group(1), kind=match.group(2)))
+            match = re.fullmatch(rf"{CONTROL_PREFIX}/experiments/([^/]+)/runtime", path)
+            if match:
+                if query.get("summary") == ["1"]:
+                    return self._send_json(200, self.bundle.orchestrator.runtime_view(user_id, workspace_id, match.group(1), summary_only=True))
+                return self._send_json(200, self.bundle.orchestrator.runtime_view(user_id, workspace_id, match.group(1)))
             match = re.fullmatch(rf"{CONTROL_PREFIX}/experiments/([^/]+)", path)
             if match:
                 item = self.bundle.repository.get_experiment(user_id, workspace_id, match.group(1))
@@ -160,14 +169,29 @@ class ControlRequestHandler(BaseHTTPRequestHandler):
                 return self._send_json(201, self.bundle.submit_requirement(requirement))
             if path == f"{CONTROL_PREFIX}/experiments":
                 return self._send_json(201, self.bundle.orchestrator.create_experiment(user_id, workspace_id, data))
+            if path == f"{CONTROL_PREFIX}/during-observations":
+                return self._send_json(201, self.bundle.orchestrator.create_observation_experiment(user_id, workspace_id, data))
+            if path == f"{CONTROL_PREFIX}/during-observations/model":
+                from .during_observation import prepare_observation_model
+                return self._send_json(201, prepare_observation_model(data, workspace_id))
+            match = re.fullmatch(rf"{CONTROL_PREFIX}/experiments/([^/]+)/observation-(interpretation|conclusion)", path)
+            if match:
+                from .during_observation_reports import write_interpretation
+                return self._send_json(200, write_interpretation(self.bundle.repository, self.bundle.reports, user_id, workspace_id, match.group(1), {**data, "kind": match.group(2)}))
             match = re.fullmatch(rf"{CONTROL_PREFIX}/experiments/([^/]+)/(strategy-preview|strategy-replays)", path)
             if match:
                 method = self.bundle.during_strategies.preview if match.group(2) == "strategy-preview" else self.bundle.during_strategies.create_replay
                 return self._send_json(200 if match.group(2) == "strategy-preview" else 201, method(user_id, workspace_id, match.group(1), data))
             match = re.fullmatch(rf"{CONTROL_PREFIX}/experiments/([^/]+)/start", path)
             if match:
-                runs = self.bundle.orchestrator.start_experiment(user_id, workspace_id, match.group(1))
+                runs = self.bundle.orchestrator.start_experiment(user_id, workspace_id, match.group(1), execution_version=data.get("executionVersion"))
                 return self._send_json(202, {"runs": runs})
+            match = re.fullmatch(rf"{CONTROL_PREFIX}/experiments/([^/]+)/stop", path)
+            if match:
+                return self._send_json(200, self.bundle.orchestrator.stop_experiment(user_id, workspace_id, match.group(1)))
+            match = re.fullmatch(rf"{CONTROL_PREFIX}/experiments/([^/]+)/reset-observation", path)
+            if match:
+                return self._send_json(200, self.bundle.orchestrator.reset_observation_experiment(user_id, workspace_id, match.group(1), data))
             match = re.fullmatch(rf"{CONTROL_PREFIX}/runs/([^/]+)/(pause|resume|stop)", path)
             if match:
                 item = getattr(self.bundle.orchestrator, f"{match.group(2)}_run")(user_id, workspace_id, match.group(1))

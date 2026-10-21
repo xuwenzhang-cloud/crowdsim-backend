@@ -131,6 +131,21 @@ class RequirementSpec:
         event_id = _text(event, "id", minimum=1, maximum=80)
         if event_id not in SUPPORTED_EVENT_IDS:
             raise RequirementValidationError(f"unsupported event category: {event_id}")
+        if (payload["schema_version"] == 2 and isinstance(payload.get("research"), dict)
+                and payload["research"].get("problem_type") == 1):
+            for field in ("hotspot_start_seconds", "hotspot_end_seconds"):
+                value = scenario.get(field)
+                if field not in scenario or field == "hotspot_end_seconds" and value is None:
+                    continue
+                try:
+                    valid = type(value) in (int, float) and math.isfinite(value) and value >= 0
+                except OverflowError:
+                    valid = False
+                if not valid:
+                    raise RequirementValidationError(f"scenario.{field} must be finite non-negative seconds")
+            start, end = scenario.get("hotspot_start_seconds"), scenario.get("hotspot_end_seconds")
+            if end is not None and (start is None or end <= start):
+                raise RequirementValidationError("hotspot end must be later than hotspot start")
 
         observation = _object(payload, "observation")
         metric_ids = observation.get("metric_ids")

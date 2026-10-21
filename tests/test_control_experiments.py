@@ -228,6 +228,32 @@ def test_gateway_correlates_decoded_websocket_ack():
     assert result["request_id"] == "req-test"
 
 
+@pytest.mark.parametrize("request_key", ["request_id", "requestId"])
+def test_gateway_correlates_run_closed_without_consuming_other_requests(request_key):
+    gateway = CrowdSimGateway("ws://fake")
+    closed, other = threading.Event(), threading.Event()
+    gateway._pending.update({"close-1": (closed, {}), "other": (other, {})})
+    gateway.latest_frame = {"type": "update", "run_id": "finished-run"}
+    received = []
+    gateway.add_listener(received.append)
+    # A closure without the matching request ID must not unblock this waiter.
+    for message in ({"type": "run_closed"}, {"type": "run_closed", request_key: "unrelated"}):
+        gateway.dispatch_for_test(message)
+        assert gateway.wait_for_ack("close-1", timeout=0) is None
+    message = {"type": "run_closed", request_key: "close-1", "run_id": "finished-run", "runtime_state": "CLOSED"}
+    coroutine = gateway._handle_raw(json.dumps(message))
+    with pytest.raises(StopIteration):
+        coroutine.send(None)
+    assert closed.is_set()
+    assert gateway.wait_for_ack("close-1", timeout=0) == message
+    assert "close-1" not in gateway._pending
+    assert not other.is_set()
+    assert gateway.wait_for_ack("other", timeout=0) is None
+    assert received[-1] == message
+    assert gateway.latest_frame == {"type": "update", "run_id": "finished-run"}
+    assert gateway._thread is None
+
+
 def test_control_service_saves_requirement_without_claiming_websocket(tmp_path, monkeypatch):
     bundle = ControlServiceBundle(data_dir=str(tmp_path), gateway_url="ws://127.0.0.1:8765")
     calls = []
